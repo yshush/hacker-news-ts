@@ -1,7 +1,6 @@
-
 interface Store {
-  currentPage: number;
   feeds: NewsFeed[];
+  currentPage: number;
 }
 
 interface News {
@@ -14,8 +13,8 @@ interface News {
 }
 
 interface NewsFeed extends News {
-  readonly comments_count: number;
   readonly points: number;
+  readonly comments_count: number;
   read?: boolean;
 }
 
@@ -28,8 +27,6 @@ interface NewsComment extends News {
   readonly level: number;
 }
 
-const container: HTMLElement | null = document.getElementById('root');
-const ajax: XMLHttpRequest = new XMLHttpRequest();
 const NEWS_URL = 'https://api.hnpwa.com/v0/news/1.json';
 const CONTENT_URL = 'https://api.hnpwa.com/v0/item/@id.json';
 const store: Store = {
@@ -37,192 +34,233 @@ const store: Store = {
   feeds: [],
 };
 
-// 믹스인 - targetClass로 제공된 class에다가 baseClass들로 제동된 n개의 기능들을 합성시킨다.
-function applyAPiMixins(targetClass: any, baseClasses: any[]):void {
-  baseClasses.forEach(baseClass => {
-    Object.getOwnPropertyNames(baseClass.prototype).forEach(name => {
-      const descriptor = Object.getOwnPropertyDescriptor(baseClass.prototype, name);
-      
-      if (descriptor) {
-        Object.defineProperty(targetClass.prototype, name, descriptor);
-      }            
-    });
-  });
-}
-
-// class는 최초에 초기화되는 과정이 필요하고 그 초기화 과정을 처리하는 함수가 생성자이다.
-// 믹스인 - class를 마치 함수처럼 혹은 단독의 객체처럼 바라보면서
-//        필요한 경우마다 class를 합성해서 새로운 기능으로 확장해나가는 기법
 class Api {
-  getRequest<AjaxResponse>(url: string): AjaxResponse {
-    const ajax = new  XMLHttpRequest();
-    ajax.open('GET', url, false);
-    ajax.send();
-  
-    return JSON.parse(ajax.response);
+  ajax: XMLHttpRequest;
+  url: string;
+
+  constructor(url: string) {
+    this.ajax = new XMLHttpRequest();
+    this.url = url;
+  }
+
+  getRequest<AjaxResponse>(): AjaxResponse {
+    this.ajax.open('GET', this.url, false);
+    this.ajax.send();
+
+    return JSON.parse(this.ajax.response) as AjaxResponse;
   }
 }
 
-class NewsFeedApi {
+class NewsFeedApi extends Api {
   getData(): NewsFeed[] {
-    return this.getRequest<NewsFeed[]>(NEWS_URL);
+    return this.getRequest<NewsFeed[]>();
   }
 }
 
-class NewsDetailApi {
-  getData(id: string): NewsDetail {
-    return this.getRequest<NewsDetail>(CONTENT_URL.replace('@id', id));
+class NewsDetailApi extends Api {
+  getData(): NewsDetail {
+    return this.getRequest<NewsDetail>();
   }
 }
 
-interface NewsFeedApi extends Api {};
-interface NewsDetailApi extends Api {};
-applyAPiMixins(NewsFeedApi, [Api]);
-applyAPiMixins(NewsDetailApi, [Api]);
+class View {
+  template: string;
+  renderTemplate: string;
+  container: HTMLElement;
+  htmlList: string[];
 
-function makeFeeds(feeds: NewsFeed[]): NewsFeed[] {
-  for (let i = 0; i < feeds.length; i++) {
-    feeds[i].read = false;
+  constructor(containerId: string, template: string) {
+    const containerElement = document.getElementById(containerId);
+
+    if (!containerElement) {
+      throw '최상위 컨테이너가 없어 UI를 진행하지 못합니다.';
+    }
+    this.container = containerElement;
+    this.template = template;
+    this.renderTemplate = template;
+    this.htmlList = [];
   }
 
-  return feeds;
+  updateView(): void {
+    this.container.innerHTML = this.renderTemplate;
+    this.renderTemplate = this.template;
+  }
+
+  addHtml(htmlString: string): void {
+    this.htmlList.push(htmlString);
+  }
+
+  getHtml(): string {
+    const snapshot = this.htmlList.join('');
+    this.clearHtmlList();
+    return snapshot;
+  }
+
+  // 기존에 template 원본은 유지하고 있어야 계속된 업데이트에서도 새로운 데이터로 업데이트를 할 수 있기 때문에 생성자에서
+  // update 받은 부분을 그대로 replace 해버리면 안된다 그래서 원본은 그대로 따로 내부적으로 저장하고, 데이터를 바꿀 때만 key를
+  // 바꾸는 형태가 되야한다. - > template에 원본을 저장하고 renderTemplate가 데이터를 바꾸는 역할을 한다.
+  setTemplateData(key: string, value: string): void {
+    this.renderTemplate = this.template.replace(`{{__${key}__}}`, value);
+  }
+
+  clearHtmlList(): void {
+    this.htmlList = [];
+  }
 }
 
-function updateView(html: string): void {
-  if (container) {
-    container.innerHTML = html;
-  } else {
-    console.error('최상위 컨테이너가 없어 UI를 진행하지 못합니다.');
-  }
-}
+class NewsFeedView extends View {
+  api: NewsFeedApi;
+  feeds: NewsFeed[];
 
-function newsFeed(): void {
-  const api = new NewsFeedApi();
-  let newsFeed: NewsFeed[] = store.feeds;
-  const newsList = [];
-  let template = `
-    <div class="bg-gray-600 min-h-screen">
-      <div class="bg-white text-xl">
-        <div class="mx-auto px-4">
-          <div class="flex justify-between items-center py-6">
-            <div class="flex justify-start">
-              <h1 class="font-extrabold">Hacker News</h1>
-            </div>
-            <div class="items-center justify-end">
-              <a href="#/page/{{__prev_page__}}" class="text-gray-500">
-                Previous
-              </a>
-              <a href="#/page/{{__next_page__}}" class="text-gray-500 ml-4">
-                Next
-              </a>
-            </div>
-          </div> 
-        </div>
-      </div>
-      <div class="p-4 text-2xl text-gray-700">
-        {{__news_feed__}}        
-      </div>
-    </div>
-  `;
-
-  if (newsFeed.length === 0) {
-    newsFeed = store.feeds = makeFeeds(api.getData());
-  }
-
-  for(let i = (store.currentPage - 1) * 10; i < store.currentPage * 10; i++) {
-    newsList.push(`
-      <div class="p-6 ${newsFeed[i].read ? 'bg-red-500' : 'bg-white'} mt-6 rounded-lg shadow-md transition-colors duration-500 hover:bg-green-100">
-        <div class="flex">
-          <div class="flex-auto">
-            <a href="#/show/${newsFeed[i].id}">${newsFeed[i].title}</a>  
-          </div>
-          <div class="text-center text-sm">
-            <div class="w-10 text-white bg-green-300 rounded-lg px-0 py-2">${newsFeed[i].comments_count}</div>
-          </div>
-        </div>
-        <div class="flex mt-3">
-          <div class="grid grid-cols-3 text-sm text-gray-500">
-            <div><i class="fas fa-user mr-1"></i>${newsFeed[i].user}</div>
-            <div><i class="fas fa-heart mr-1"></i>${newsFeed[i].points}</div>
-            <div><i class="far fa-clock mr-1"></i>${newsFeed[i].time_ago}</div>
-          </div>  
-        </div>
-      </div>    
-    `);
-  }
-
-  template = template.replace('{{__news_feed__}}', newsList.join(''));
-  template = template.replace('{{__prev_page__}}', String(store.currentPage > 1 ? store.currentPage - 1 : 1));
-  template = template.replace('{{__next_page__}}', String(store.currentPage + 1));
-
-  updateView(template);
-}
-
-function newsDetail(): void {
-  const id = location.hash.substr(7);
-  const api = new NewsDetailApi();
-  const newsContent = api.getData(id);
-  let template = `
-    <div class="bg-gray-600 min-h-screen pb-8">
-      <div class="bg-white text-xl">
-        <div class="mx-auto px-4">
-          <div class="flex justify-between items-center py-6">
-            <div class="flex justify-start">
-              <h1 class="font-extrabold">Hacker News</h1>
-            </div>
-            <div class="items-center justify-end">
-              <a href="#/page/${store.currentPage}" class="text-gray-500">
-                <i class="fa fa-times"></i>
-              </a>
-            </div>
+  constructor(containerId: string) {
+    let template: string = `
+      <div class="bg-gray-600 min-h-screen">
+        <div class="bg-white text-xl">
+          <div class="mx-auto px-4">
+            <div class="flex justify-between items-center py-6">
+              <div class="flex justify-start">
+                <h1 class="font-extrabold">Hacker News</h1>
+              </div>
+              <div class="items-center justify-end">
+                <a href="#/page/{{__prev_page__}}" class="text-gray-500">
+                  Previous
+                </a>
+                <a href="#/page/{{__next_page__}}" class="text-gray-500 ml-4">
+                  Next
+                </a>
+              </div>
+            </div> 
           </div>
         </div>
-      </div>
-
-      <div class="h-full border rounded-xl bg-white m-6 p-4 ">
-        <h2>${newsContent.title}</h2>
-        <div class="text-gray-400 h-20">
-          ${newsContent.content}
+        <div class="p-4 text-2xl text-gray-700">
+          {{__news_feed__}}        
         </div>
-
-        {{__comments__}}
-
       </div>
-    </div>
-  `;
+    `;
 
-  for(let i=0; i < store.feeds.length; i++) {
-    if (store.feeds[i].id === Number(id)) {
-      store.feeds[i].read = true;
-      break;
+    super(containerId, template);
+
+    this.api = new NewsFeedApi(NEWS_URL);
+    this.feeds = store.feeds;
+
+    if (this.feeds.length === 0) {
+      this.feeds = store.feeds = this.api.getData();
+      this.makeFeeds();
+    }  
+  }
+  
+  render(): void {
+
+    for(let i = (store.currentPage - 1) * 10; i < store.currentPage * 10; i++) {
+      const { id, title, comments_count, user, points, time_ago, read } = this.feeds[i];  // 구조분해 할당
+      this.addHtml(`
+        <div class="p-6 ${read ? 'bg-red-500' : 'bg-white'} mt-6 rounded-lg shadow-md transition-colors duration-500 hover:bg-green-100">
+          <div class="flex">
+            <div class="flex-auto">
+              <a href="#/show/${id}">${title}</a>  
+            </div>
+            <div class="text-center text-sm">
+              <div class="w-10 text-white bg-green-300 rounded-lg px-0 py-2">${comments_count}</div>
+            </div>
+          </div>
+          <div class="flex mt-3">
+            <div class="grid grid-cols-3 text-sm text-gray-500">
+              <div><i class="fas fa-user mr-1"></i>${user}</div>
+              <div><i class="fas fa-heart mr-1"></i>${points}</div>
+              <div><i class="far fa-clock mr-1"></i>${time_ago}</div>
+            </div>  
+          </div>
+        </div>    
+      `);
+    }
+  
+    this.setTemplateData('news_feed', this.getHtml());
+    this.setTemplateData('prev_page', String(store.currentPage > 1 ? store.currentPage - 1 : 1));
+    this.setTemplateData('next_page', String(store.currentPage + 1));
+  
+    this.updateView();
+  }
+
+  makeFeeds(): void {
+    for (let i = 0; i < this.feeds.length; i++) {
+      this.feeds[i].read = false;
     }
   }
-
-  updateView(template.replace('{{__comments__}}', makeComment(newsContent.comments)));
 }
 
-function makeComment(comments: NewsComment[]): string {
-  const commentString = [];
-
-  for(let i = 0; i < comments.length; i++) {
-    const comment: NewsComment = comments[i];
-
-    commentString.push(`
-      <div style="padding-left: ${comment.level * 40}px;" class="mt-4">
-        <div class="text-gray-400">
-          <i class="fa fa-sort-up mr-2"></i>
-          <strong>${comment.user}</strong> ${comment.time_ago}
+class NewsDetailView extends View {
+  constructor(containerId: string) {
+    let template = `
+      <div class="bg-gray-600 min-h-screen pb-8">
+        <div class="bg-white text-xl">
+          <div class="mx-auto px-4">
+            <div class="flex justify-between items-center py-6">
+              <div class="flex justify-start">
+                <h1 class="font-extrabold">Hacker News</h1>
+              </div>
+              <div class="items-center justify-end">
+                <a href="#/page/{{__currentPage__}}" class="text-gray-500">
+                  <i class="fa fa-times"></i>
+                </a>
+              </div>
+            </div>
+          </div>
         </div>
-        <p class="text-gray-700">${comment.content}</p>
-      </div>      
-    `);
+  
+        <div class="h-full border rounded-xl bg-white m-6 p-4 ">
+          <h2>{{__title__}}</h2>
+          <div class="text-gray-400 h-20">
+            {{__content__}}
+          </div>
+  
+          {{__comments__}}
+  
+        </div>
+      </div>
+    `;
 
-    if (comment.comments.length > 0) {
-      commentString.push(makeComment(comment.comments));
-    }
+    super(containerId, template);
   }
 
-  return commentString.join('');
+  render(): void {
+    const id = location.hash.substr(7);
+    const api = new NewsDetailApi(CONTENT_URL.replace('@id', id));
+    const newsDetail: NewsDetail = api.getData();
+
+    for(let i=0; i < store.feeds.length; i++) {
+      if (store.feeds[i].id === Number(id)) {
+        store.feeds[i].read = true;
+        break;
+      }
+    }
+    this.setTemplateData('comments', this.makeComment(newsDetail.comments));
+    this.setTemplateData('currentPage', String(store.currentPage));
+    this.setTemplateData('title', newsDetail.title);
+    this.setTemplateData('content', newsDetail.content);
+
+    this.updateView();
+  }
+  makeComment(comments: NewsComment[]): string {
+  
+    for(let i = 0; i < comments.length; i++) {
+      const comment: NewsComment = comments[i];
+  
+      this.addHtml(`
+        <div style="padding-left: ${comment.level * 40}px;" class="mt-4">
+          <div class="text-gray-400">
+            <i class="fa fa-sort-up mr-2"></i>
+            <strong>${comment.user}</strong> ${comment.time_ago}
+          </div>
+          <p class="text-gray-700">${comment.content}</p>
+        </div>      
+      `);
+  
+      if (comment.comments.length > 0) {
+        this.addHtml(this.makeComment(comment.comments));
+      }
+    }
+    return this.getHtml();
+  }
 }
 
 function router(): void {
